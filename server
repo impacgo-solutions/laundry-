@@ -233,7 +233,7 @@ app.post(
       event = stripe.webhooks.constructEvent(
         req.body,
         sig,
- process.env.STRIPE_WEBHOOK_SECRET,
+ "whsec_irBGhfyHPFLQuxQMUE09PjD9ZNZNIB6j",
       );
     } catch (err) {
       console.error("Webhook verification failed:", err.message);
@@ -4070,17 +4070,25 @@ doc.text(`₹${Number(invoice.total_amount).toFixed(2)}`, 420, y, {
 
 
 
+function withCategoryImageUrl(row, req) {
+  const { image, image_type, ...rest } = row;
+  return {
+    ...rest,
+    image_url: image ? `${req.protocol}://${req.get('host')}/media/category-photo/${row.id}` : null,
+  };
+}
+
 app.get('/categories', async (req, res) => {
   try {
     const result = await pool.query(`
-      SELECT id, name, description, emoji 
-      FROM categories 
+      SELECT id, name, description, emoji, (image IS NOT NULL) AS image
+      FROM categories
       ORDER BY id
     `);
-    
+
     res.json({
       success: true,
-      data: result.rows,
+      data: result.rows.map(r => withCategoryImageUrl(r, req)),
       message: 'Categories fetched successfully'
     });
   } catch (error) {
@@ -4098,11 +4106,11 @@ app.get('/categories/:id', async (req, res) => {
   try {
     const { id } = req.params;
     const result = await pool.query(`
-      SELECT id, name, description, emoji 
-      FROM categories 
+      SELECT id, name, description, emoji, (image IS NOT NULL) AS image
+      FROM categories
       WHERE id = $1
     `, [id]);
-    
+
     if (result.rows.length === 0) {
       return res.status(404).json({
         success: false,
@@ -4110,10 +4118,10 @@ app.get('/categories/:id', async (req, res) => {
         message: 'Category not found'
       });
     }
-    
+
     res.json({
       success: true,
-      data: result.rows[0],
+      data: withCategoryImageUrl(result.rows[0], req),
       message: 'Category fetched successfully'
     });
   } catch (error) {
@@ -12257,20 +12265,22 @@ app.get("/categories/:id", async (req, res) => {
 
 app.post("/categories", authenticateAdmin, async (req, res) => {
   try {
-    const { name, description, emoji } = req.body;
-    
+    const { name, description, emoji, imageBase64, contentType } = req.body;
+
     if (!name) {
       return res.status(400).json({ error: "Name is required" });
     }
-    
+
+    const imageBytes = imageBase64 ? Buffer.from(imageBase64, "base64") : null;
+
     const { rows } = await pool.query(
-      `INSERT INTO categories (name, description, emoji) 
-       VALUES ($1, $2, $3) 
-       RETURNING *`,
-      [name, description, emoji]
+      `INSERT INTO categories (name, description, emoji, image, image_type)
+       VALUES ($1, $2, $3, $4, $5)
+       RETURNING id, name, description, emoji, (image IS NOT NULL) AS image`,
+      [name, description, emoji, imageBytes, imageBytes ? (contentType || "image/jpeg") : null]
     );
-    
-    res.status(201).json({ success: true, data: rows[0] });
+
+    res.status(201).json({ success: true, data: withCategoryImageUrl(rows[0], req) });
   } catch (err) {
     console.error("Error creating category:", err);
     res.status(500).json({ error: "Internal server error" });
@@ -12279,26 +12289,38 @@ app.post("/categories", authenticateAdmin, async (req, res) => {
 app.put("/categories/:id", authenticateAdmin, async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, description, emoji } = req.body;
-    
+    const { name, description, emoji, imageBase64, contentType } = req.body;
+    const imageBytes = imageBase64 ? Buffer.from(imageBase64, "base64") : null;
+
     const { rows } = await pool.query(
-      `UPDATE categories 
-       SET name = COALESCE($1, name), 
-           description = COALESCE($2, description), 
-           emoji = COALESCE($3, emoji)
-       WHERE id = $4 
-       RETURNING *`,
-      [name, description, emoji, id]
+      `UPDATE categories
+       SET name = COALESCE($1, name),
+           description = COALESCE($2, description),
+           emoji = COALESCE($3, emoji),
+           image = COALESCE($4, image),
+           image_type = COALESCE($5, image_type)
+       WHERE id = $6
+       RETURNING id, name, description, emoji, (image IS NOT NULL) AS image`,
+      [name, description, emoji, imageBytes, imageBytes ? (contentType || "image/jpeg") : null, id]
     );
-    
+
     if (rows.length === 0) {
       return res.status(404).json({ error: "Category not found" });
     }
-    
-    res.json({ success: true, data: rows[0] });
+
+    res.json({ success: true, data: withCategoryImageUrl(rows[0], req) });
   } catch (err) {
     console.error("Error updating category:", err);
     res.status(500).json({ error: "Internal server error" });
+  }
+});
+app.get("/media/category-photo/:id", async (req, res) => {
+  try {
+    const result = await pool.query("SELECT image, image_type FROM categories WHERE id = $1", [req.params.id]);
+    if (result.rows.length === 0) return res.status(404).send("Not found");
+    serveMedia(result.rows[0].image, result.rows[0].image_type, req, res);
+  } catch (err) {
+    res.status(500).send("Server error");
   }
 });
 app.delete("/categories/:id", authenticateAdmin, async (req, res) => {
