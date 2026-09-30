@@ -1,0 +1,4 @@
+node_modules/
+.env
+ringcentral_jwt.json
+firebase-admin.js
